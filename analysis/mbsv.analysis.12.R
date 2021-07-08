@@ -3,6 +3,7 @@
 
 load("dbmts.RData")
 load("acat.RData")
+acat_results <- read.delim("acat.gwas.corr.txt")
 library(ggplot2)
 library(reshape2)
 
@@ -12,11 +13,19 @@ result.list <- list(mir.df.list = list(),
                     plot.score.list = list(), plot.score_sign.list = list())
 
 for (g in names(acat_df)) {
+  print(paste("=====", g, "=====", sep = " "))
   load(paste(g, ".gwas.nonmhc.pruned.RData", sep = ""))
+  gwas_acat_results <- acat_results[acat_results$gwas == g,]
+  sig_mirs <- gwas_acat_results$mirna[
+    gwas_acat_results$mbsv < 0.05 |
+      gwas_acat_results$mbsv.gtex.eqtl < 0.05 |
+      gwas_acat_results$mbsv.gtex.brain.eqtl < 0.05 |
+      gwas_acat_results$mbsv.psychencode.eqtl < 0.05
+    ]
   gwas_summ <- read.delim(paste("../gwas/", gsub(".", "-", g, fixed = TRUE), ".gwas", sep = ""), header = TRUE, stringsAsFactors = FALSE)
   gwas_summ <- gwas_summ[!(gwas_summ$SNP %in% unique(gwas_summ$SNP[duplicated(gwas_summ$SNP)])),]
   rownames(gwas_summ) <- gwas_summ$SNP
-  sig_mirs <- rownames(acat_df[[g]][acat_df[[g]]$mbsv < 2.5e-6 | acat_df[[g]]$mbsv.gtex.eqtl < 2.5e-6 | acat_df[[g]]$mbsv.gtex.brain.eqtl < 2.5e-6 | acat_df[[g]]$mbsv.psychencode.eqtl < 2.5e-6,])
+  # sig_mirs <- rownames(acat_df[[g]][acat_df[[g]]$mbsv < 2.5e-6 | acat_df[[g]]$mbsv.gtex.eqtl < 2.5e-6 | acat_df[[g]]$mbsv.gtex.brain.eqtl < 2.5e-6 | acat_df[[g]]$mbsv.psychencode.eqtl < 2.5e-6,])
   mir.df <- list()
   linmod.list <- list()
   linmod.summ.list <- list()
@@ -90,17 +99,73 @@ for (g in names(acat_df)) {
   result.list$plot.score.list[[g]] <- plot.2.list
   result.list$plot.score_sign.list[[g]] <- plot.list
 }
-save(result.list, file = "mirna.linmods.RData")
+save(result.list, file = "mirna.linmods.new.RData")
 
-for (g in names(result.list$linmod.score.df.list)) {
-  t = result.list$linmod.score.df.list[[g]]
-  if (dim(t)[1] > 0) {
-    write.table(t, paste(g, ".mirna.linmod.txt", sep = ""), quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
-  }
-  t = result.list$linmod.score_sign.df.list[[g]]
-  if (dim(t)[1] > 0) {
-    write.table(t, paste(g, ".mirna.sign.linmod.txt", sep = ""), quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
-  }
-}
+df <- do.call(rbind, result.list$linmod.score.df.list)
+df$fdr <- p.adjust(df$p, method = "BH")
+df$bonf.p <- p.adjust(df$p, method = "bonferroni")
+df$gwas <- gsub("\\.\\d+$", "", rownames(df))
+write.table(df, "mirna.linmod.new.txt", quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
 
-ggsave("scz.clozuk2018.mir-323b-3p.sign.linmod.png", result.list$plot.score_sign.list$scz.clozuk2018$`miR-323b-3p`, device = "png", width = 16, height = 9, dpi = 600)
+mir.plot.list <- apply(df[df$p < 0.05,], 1, function(x) {
+  y <- as.character(x[[8]])
+  z <- as.character(x[[1]])
+  return(
+    result.list$plot.score.list[[y]][[z]] +
+      theme(
+        axis.title = element_text(size = 20),
+        axis.text = element_text(size = 12),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)
+      ) +
+      ggtitle(paste(z, " - ", y, sep = ""))
+  )
+})
+
+library(ggpubr)
+ggsave("mirna.linmods.new.scorevseffectsize.png", ggarrange(plotlist = mir.plot.list), device = "png", width = 8, height = 8, dpi = 600)
+
+
+df <- do.call(rbind, result.list$linmod.score_sign.df.list)
+df$fdr <- p.adjust(df$p, method = "BH")
+df$bonf.p <- p.adjust(df$p, method = "bonferroni")
+df$gwas <- gsub("\\.\\d+$", "", rownames(df))
+write.table(df, "mirna.linmod_sign.new.txt", quote = FALSE, sep = "\t", row.names = FALSE, col.names = TRUE)
+
+mir.df.list <- apply(df[df$p < 0.05,], 1, function(x) {
+  y <- as.character(x[[8]])
+  z <- as.character(x[[1]])
+  d <- result.list$mir.df.list[[y]][[z]]
+  d$gwas <- y
+  d$mirna <- z
+  return(d)
+})
+mir.df <- do.call(rbind, mir.df.list)
+mir.df$diffScore.direction <- "Decreased affinity"
+mir.df$diffScore.direction[mir.df$diffScore < 0] <- "Increased affinity"
+mir.df$sig <- apply(mir.df, 1, function(x) {
+  e <- as.numeric(x[[12]])
+  y <- as.character(x[[15]])
+  z <- as.character(x[[16]])
+  p <- df[df$gwas == y & df$mir.family == z, "p"]
+  if(e == max(mir.df$alt_es[mir.df$gwas == y & mir.df$mirna == z])) {
+    return(paste("p = ", as.character(round(p, 3)), sep = ""))
+  } else {
+    return("")
+  }
+})
+
+g <- ggplot(data = mir.df, aes(x = mirna, y = alt_es)) +
+  geom_boxplot(aes(color = diffScore.direction)) +
+  theme(legend.position = "bottom",
+        axis.title = element_text(size = 20),
+        axis.text = element_text(size = 12),
+        axis.text.x = element_text(angle = 0, hjust = 0.5),
+        legend.text = element_text(size = 14),
+        legend.title = element_text(size = 16)) +
+  geom_text(aes(label = sig, group = mirna), position = position_dodge(0.9), vjust = -1, size = 6) +
+  labs(x = "", y = "Alternate allele log odds ratio", color = "Predicted MBSV effect:") +
+  ylim(c(NA, max(mir.df$alt_es) * 1.2)) +
+  facet_wrap(~ gwas, scales = "free_x"); g
+
+ggsave("mirna.linmods_sign.new.scorevseffectsize.png", g, device = "png", width = 10, height = 8, dpi = 600)
